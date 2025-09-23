@@ -3,6 +3,8 @@ import cv2
 import numpy as np
 import torch
 import os
+from pytorch_msssim import ms_ssim
+
 
 def matplotlib_to_opencv(fig_or_plt):
     """
@@ -713,22 +715,20 @@ def resize_tensor(t: torch.Tensor, size: tuple[int, int]) -> torch.Tensor:
         t_resized = F.interpolate(t_exp, size=size, mode='bilinear', align_corners=False)
         return t_resized.squeeze(0)  # [C, H2, W2]
 
-def add_text_line(image, text, margin=10, font_scale=1.0, thickness=2,
+
+def add_text_line(image, text, margin=10, font_scale=None, thickness=None,
                   xpos=None, ypos=None, crop=None):
     """
     Add outlined text to an image, with optional lines and cropping.
 
-    Drawing order:
-        1. Draw lines (on full image)
-        2. Crop if specified
-        3. Add outlined text on cropped image
+    If font_scale/thickness=None, they adapt automatically to image size.
 
     Args:
         image (np.ndarray): Input image.
         text (str): Text to draw.
         margin (int): Margin from bottom-left for text.
-        font_scale (float): Font scale.
-        thickness (int): Text thickness.
+        font_scale (float or None): Font scale. If None, adapts to image size.
+        thickness (int or None): Text thickness. If None, adapts to image size.
         xpos (int or None): X position for vertical red line.
         ypos (int or None): Y position for horizontal green line.
         crop (tuple or None): (ymin, ymax, xmin, xmax) crop region.
@@ -742,31 +742,40 @@ def add_text_line(image, text, margin=10, font_scale=1.0, thickness=2,
 
     H, W = img_copy.shape[:2]
 
+    # --- Adapt font scale and thickness ---
+    if font_scale is None:
+        font_scale = max(0.4, W / 300.0)  
+    if thickness is None:
+        thickness = max(2, int(W / 160.0))  
+
+    # --- Line thickness proportional as well ---
+    line_thickness = max(1, int(W / 400.0))
+
     # --- Draw vertical red line at xpos ---
     if xpos is not None and 0 <= xpos < W:
-        cv2.line(img_copy, (xpos, 0), (xpos, H), color=(0, 0, 255), thickness=1, lineType=line_type)
+        cv2.line(img_copy, (xpos, 0), (xpos, H), color=(0, 0, 255), thickness=line_thickness, lineType=line_type)
 
     # --- Draw horizontal green line at ypos ---
     if ypos is not None and 0 <= ypos < H:
-        cv2.line(img_copy, (0, ypos), (W, ypos), color=(0, 255, 0), thickness=1, lineType=line_type)
+        cv2.line(img_copy, (0, ypos), (W, ypos), color=(0, 255, 0), thickness=line_thickness, lineType=line_type)
 
     # --- Crop if requested ---
     if crop is not None:
         ymin, ymax, xmin, xmax = crop
         img_copy = img_copy[ymin:ymax, xmin:xmax]
 
-    # --- Draw outlined white text near bottom-left ---
+    # --- Compute text position ---
     Hc, Wc = img_copy.shape[:2]
     (text_width, text_height), baseline = cv2.getTextSize(text, font, font_scale, thickness)
     x = margin
     y = Hc - margin - baseline
 
     outline_thickness = thickness + 2
+
     cv2.putText(img_copy, text, (x, y), font, font_scale, (0, 0, 0), outline_thickness, line_type)
     cv2.putText(img_copy, text, (x, y), font, font_scale, (255, 255, 255), thickness, line_type)
 
     return img_copy
-
 
 def to_rgb_image(image, scale = False):
     """
@@ -811,3 +820,89 @@ def to_rgb_image(image, scale = False):
     image = np.round(image).astype(np.uint8)
 
     return image
+
+
+def compute_ms_ssim(img1: np.ndarray, img2: np.ndarray) -> float:
+    """
+    Compute MS-SSIM between two images in numpy format.
+
+    Args:
+        img1, img2: numpy arrays with shape (H, W, C) or (C, H, W).
+                    Values can be in [0,255] or [0,1].
+
+    Returns:
+        MS-SSIM score (float, between 0 and 1).
+    """
+    # Ensure shape (C,H,W)
+    if img1.ndim == 3 and img1.shape[0] not in [1,3]:
+        img1 = np.transpose(img1, (2,0,1))
+    if img2.ndim == 3 and img2.shape[0] not in [1,3]:
+        img2 = np.transpose(img2, (2,0,1))
+
+    # Convert to torch
+    t1 = torch.from_numpy(img1).unsqueeze(0).float()
+    t2 = torch.from_numpy(img2).unsqueeze(0).float()
+
+    # Normalize to [0,1]
+    if t1.max() > 1.0:  
+        t1 = t1 / 255.0
+    if t2.max() > 1.0:
+        t2 = t2 / 255.0
+
+    # Compute MS-SSIM
+    score = ms_ssim(t1, t2, data_range=1.0, size_average=True)
+    return score.item()
+
+
+import cv2
+import torch
+import numpy as np
+from pytorch_msssim import ms_ssim
+
+
+def warp_image(img, flow):
+    """
+    Warp image using dense optical flow.
+    img: (H,W,C) np.uint8 ou float32 [0,1]
+    flow: (H,W,2) np.float32 (u,v)
+    returns: warped image (H,W,C)
+    """
+    h, w = flow.shape[:2]
+    grid_x, grid_y = np.meshgrid(np.arange(w), np.arange(h))
+    map_x = (grid_x + flow[..., 0]).astype(np.float32)
+    map_y = (grid_y + flow[..., 1]).astype(np.float32)
+    warped = cv2.remap(img, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+    return warped
+
+
+def to_tensor(img):
+    """Converte numpy HWC [0,255] ou [0,1] para torch BCHW float32 [0,1]."""
+    if img.dtype != np.float32:
+        img = img.astype(np.float32) / 255.0
+    img = torch.from_numpy(img).permute(2,0,1).unsqueeze(0)
+    return img
+
+
+def warp_ms_ssim(original, processed):
+    """
+    Calcula warp MS-SSIM entre duas imagens.
+    original, processed: np.array HWC uint8 ou float32
+    """
+    # Estima fluxo óptico (processed -> original)
+    gray1 = cv2.cvtColor(processed, cv2.COLOR_RGB2GRAY)
+    gray2 = cv2.cvtColor(original, cv2.COLOR_RGB2GRAY)
+    flow = cv2.calcOpticalFlowFarneback(
+        gray1, gray2, None,
+        0.5, 3, 15, 3, 5, 1.2, 0
+    )
+
+    # Warpa processed p/ alinhar com original
+    warped = warp_image(processed, flow)
+
+    # Converte para tensores
+    t1 = to_tensor(original)
+    t2 = to_tensor(warped)
+
+    # Calcula MS-SSIM
+    score = ms_ssim(t1, t2, data_range=1.0, size_average=True)
+    return float(score)

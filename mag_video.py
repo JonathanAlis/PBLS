@@ -337,6 +337,8 @@ def main(video_path,
             video_writer_PB.close()
             video_writer_compare.close()
             cv2.imwrite(f'{images_prefix}_sliceX={stcx}_H.png', xsliceH)
+            resized = cv2.resize(xsliceH, (xsliceH.shape[1] // 2, xsliceH.shape[0] // 2)) 
+            cv2.imwrite(f'{images_prefix}_sliceX={stcx}_H.jpg', xsliceH)
             cv2.imwrite(f'{images_prefix}_sliceY={stcy}_H.png', ysliceH)
             cv2.imwrite(f'{images_prefix}_sliceX={stcx}_V.png', xsliceV)
             cv2.imwrite(f'{images_prefix}_sliceY={stcy}_V.png', ysliceV)
@@ -344,6 +346,13 @@ def main(video_path,
             cv2.imwrite(f'{images_prefix}_sliceY={stcy}_H2.png', ysliceH2)
             cv2.imwrite(f'{images_prefix}_sliceX={stcx}_V2.png', xsliceV2)
             cv2.imwrite(f'{images_prefix}_sliceY={stcy}_V2.png', ysliceV2)
+            cv2.imwrite(f'{images_prefix}_sliceX={stcx}_V.jpg', xsliceV)
+            cv2.imwrite(f'{images_prefix}_sliceY={stcy}_V.jpg', ysliceV)
+            cv2.imwrite(f'{images_prefix}_sliceX={stcx}_H2.jpg', xsliceH2)
+            cv2.imwrite(f'{images_prefix}_sliceY={stcy}_H2.jpg', ysliceH2)
+            cv2.imwrite(f'{images_prefix}_sliceX={stcx}_V2.jpg', xsliceV2)
+            cv2.imwrite(f'{images_prefix}_sliceY={stcy}_V2.jpg', ysliceV2)
+
             print('finished')
             break
         key = cv2.waitKey(1) & 0xFF
