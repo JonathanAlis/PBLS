@@ -6,10 +6,8 @@ from scipy.signal import butter
 import torch.nn as nn
 import sys
 import os
-import math 
 from SCFpyr import SCFpyr
 import copy
-import time
 import json
 
 from collections import deque
@@ -253,7 +251,7 @@ def main(video_path,
         ### snapshot
 
         if snapshot_frame is not None:
-            print(frame_idx, snapshot_frame)
+            #   print(frame_idx, snapshot_frame)
             if frame_idx == snapshot_frame:
                 print("Snapshot at", images_prefix)
                 cv2.imwrite(f'{images_prefix}_fr{frame_idx}_mags_horizontal.jpg', show_mags)

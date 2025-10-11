@@ -855,54 +855,189 @@ def compute_ms_ssim(img1: np.ndarray, img2: np.ndarray) -> float:
 
 
 import cv2
-import torch
 import numpy as np
+import torch
 from pytorch_msssim import ms_ssim
 
-
-def warp_image(img, flow):
-    """
-    Warp image using dense optical flow.
-    img: (H,W,C) np.uint8 ou float32 [0,1]
-    flow: (H,W,2) np.float32 (u,v)
-    returns: warped image (H,W,C)
-    """
-    h, w = flow.shape[:2]
-    grid_x, grid_y = np.meshgrid(np.arange(w), np.arange(h))
-    map_x = (grid_x + flow[..., 0]).astype(np.float32)
-    map_y = (grid_y + flow[..., 1]).astype(np.float32)
-    warped = cv2.remap(img, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
-    return warped
-
-
-def to_tensor(img):
-    """Converte numpy HWC [0,255] ou [0,1] para torch BCHW float32 [0,1]."""
-    if img.dtype != np.float32:
-        img = img.astype(np.float32) / 255.0
-    img = torch.from_numpy(img).permute(2,0,1).unsqueeze(0)
+def _to_numpy(img):
+    """Converte torch.Tensor [C,H,W] ou [1,C,H,W] em numpy [H,W,C]."""
+    if isinstance(img, torch.Tensor):
+        if img.ndim == 4:
+            img = img[0]  # tira batch
+        img = img.permute(1, 2, 0).detach().cpu().numpy()
     return img
 
 
-def warp_ms_ssim(original, processed):
+def _to_tensor_for_mssim(img):
+    """Converte numpy [H,W,C] para torch.Tensor [1,C,H,W] float32 em [0,1]."""
+    if img.ndim == 2:
+        img = img[..., None]
+    img = img.astype(np.float32)
+    if img.max() > 1.0:
+        img = img / 255.0
+    return torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0)
+
+
+def warp_ms_ssim(img_ref, img_proc, return_warped=False, farneback_params=None, assume_bgr=False):
     """
-    Calcula warp MS-SSIM entre duas imagens.
-    original, processed: np.array HWC uint8 ou float32
+    Calcula MS-SSIM entre img_ref e img_proc após warp via optical flow.
+    
+    Args:
+        img_ref: torch.Tensor [C,H,W] ou numpy [H,W,C]
+        img_proc: idem
+        return_warped (bool): se True, retorna também (warped_img, flow)
+        farneback_params (dict): parâmetros extras p/ Farnebäck
+        assume_bgr (bool): True se imagens vêm direto do cv2.imread (BGR)
+    
+    Returns:
+        Se return_warped=False:
+            (ms_ssim_value: float, motion_mean: float)
+        Se return_warped=True:
+            (ms_ssim_value: float, motion_mean: float, warped_img: np.ndarray, flow: np.ndarray)
     """
-    # Estima fluxo óptico (processed -> original)
-    gray1 = cv2.cvtColor(processed, cv2.COLOR_RGB2GRAY)
-    gray2 = cv2.cvtColor(original, cv2.COLOR_RGB2GRAY)
+    # --- garantir numpy ---
+    img_ref = _to_numpy(img_ref) if isinstance(img_ref, torch.Tensor) else img_ref
+    img_proc = _to_numpy(img_proc) if isinstance(img_proc, torch.Tensor) else img_proc
+
+    if assume_bgr:
+        img_ref = img_ref[..., ::-1].copy()
+        img_proc = img_proc[..., ::-1].copy()
+
+    # --- converter para gray para o fluxo ---
+    def to_gray_uint8(im):
+        if im.ndim == 3:
+            gray = cv2.cvtColor(im.astype(np.float32), cv2.COLOR_RGB2GRAY)
+        else:
+            gray = im.astype(np.float32)
+        if gray.max() <= 1.0:
+            gray = (gray * 255.0).astype(np.uint8)
+        else:
+            gray = gray.astype(np.uint8)
+        return gray
+
+    gray_ref = to_gray_uint8(img_ref)
+    gray_proc = to_gray_uint8(img_proc)
+
+    # --- parâmetros Farnebäck ---
+    p = {
+        'pyr_scale': 0.5,
+        'levels': 4,
+        'winsize': 30,
+        'iterations': 4,
+        'poly_n': 5,
+        'poly_sigma': 1.2,
+        'flags': 0
+    }
+    if farneback_params:
+        p.update(farneback_params)
+
+    # fluxo: mapeia pontos de img_proc -> img_ref
     flow = cv2.calcOpticalFlowFarneback(
-        gray1, gray2, None,
-        0.5, 3, 15, 3, 5, 1.2, 0
+        gray_proc, gray_ref, None,
+        p['pyr_scale'], p['levels'], p['winsize'],
+        p['iterations'], p['poly_n'], p['poly_sigma'], p['flags']
     )
 
-    # Warpa processed p/ alinhar com original
-    warped = warp_image(processed, flow)
+    h, w = gray_ref.shape
+    grid_x, grid_y = np.meshgrid(np.arange(w), np.arange(h))
+    map_x = (grid_x - flow[..., 0]).astype(np.float32)
+    map_y = (grid_y - flow[..., 1]).astype(np.float32)
 
-    # Converte para tensores
-    t1 = to_tensor(original)
-    t2 = to_tensor(warped)
+    warped = cv2.remap(
+        img_proc.astype(np.float32), map_x, map_y,
+        interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT
+    )
 
-    # Calcula MS-SSIM
-    score = ms_ssim(t1, t2, data_range=1.0, size_average=True)
-    return float(score)
+    # --- MS-SSIM ---
+    t_ref = _to_tensor_for_mssim(img_ref)
+    t_warp = _to_tensor_for_mssim(warped)
+    score = float(ms_ssim(t_ref, t_warp, data_range=1.0).item())
+
+    # --- magnitude média do flow ---
+    mag = np.linalg.norm(flow, axis=-1)
+    motion_mean = float(np.mean(mag))
+
+    if return_warped:
+        return score, motion_mean, warped.astype(img_proc.dtype), flow
+    else:
+        return score, motion_mean
+    
+
+import os
+import csv
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import stats
+from typing import Dict, List, Optional, Tuple
+
+def analyze_metrics(
+    data: Dict[str, List[float]],
+    flow_amplitudes: Optional[Dict[str, object]] = None,
+    plot: bool = False,
+    csv_path: Optional[str] = None,
+    video_name: Optional[str] = None
+) -> Dict[str, Tuple[float, float, float]]:
+    """
+    Analisa métricas de séries (ex: MSSSIM de cada frame).
+
+    Args:
+        data (dict): {label: lista de valores}
+        flow_amplitudes (dict, optional): {label: lista de amplitudes médias do optical flow}.
+        plot (bool): Se True, plota o gráfico.
+        csv_path (str, optional): Caminho para CSV. Se não existir, cria.
+        video_name (str, optional): Nome do vídeo (primeira coluna do CSV).
+
+    Returns:
+        dict: {label: (mean, ci, flow_amp)}
+    """
+    results: Dict[str, Tuple[float, float, float]] = {}
+
+    for label, values in data.items():
+        arr = np.array(values)
+        mean = float(np.mean(arr))
+
+        # intervalo de confiança (95%)
+        if len(arr) > 1:
+            sem = stats.sem(arr)
+            h = sem * stats.t.ppf((1 + 0.95) / 2., len(arr) - 1)
+        else:
+            h = 0.0
+
+        # flow amplitude médio
+        flow_amp = (
+            float(np.mean(flow_amplitudes[label]))
+            if flow_amplitudes and label in flow_amplitudes
+            else float("nan")
+        )
+
+        results[label] = (mean, h, flow_amp)
+
+    # Plot opcional
+    if plot:
+        plt.figure(figsize=(10, 6))
+        for label, (mean, ci, _) in results.items():
+            plt.errorbar([label], [mean], yerr=[ci], fmt="o", capsize=5, label=label)
+        plt.legend()
+        plt.ylabel("Métrica")
+        plt.title("Comparação de métodos")
+        plt.show()
+
+    # CSV opcional
+    if csv_path is not None:
+        file_exists = os.path.isfile(csv_path)
+        with open(csv_path, "a", newline="") as f:
+            writer = csv.writer(f)
+
+            if not file_exists:
+                writer.writerow(["video_name", "method", "mean", "ci", "flow_amplitude"])
+
+            for label, (mean, ci, flow_amp) in results.items():
+                writer.writerow([
+                    video_name if video_name else "",
+                    label,
+                    f"{mean:.6f}",
+                    f"{ci:.6f}",
+                    "" if np.isnan(flow_amp) else f"{flow_amp:.6f}"
+                ])
+
+    return results
