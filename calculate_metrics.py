@@ -266,6 +266,7 @@ def main(video_path,
             print("FIM DO VIDEO")
             avgs = analyze_metrics(msssim_all, amas_all, plot = False,
                                    csv_path = "metrics.csv",
+                                   csv_complete = "metrics_all_frames.csv",
                                    video_name=video_path)
             print(avgs)
             video_writer_compare.close()

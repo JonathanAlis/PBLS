@@ -975,6 +975,7 @@ def analyze_metrics(
     flow_amplitudes: Optional[Dict[str, object]] = None,
     plot: bool = False,
     csv_path: Optional[str] = None,
+    csv_complete: Optional[str] = None,
     video_name: Optional[str] = None
 ) -> Dict[str, Tuple[float, float, float]]:
     """
@@ -985,6 +986,7 @@ def analyze_metrics(
         flow_amplitudes (dict, optional): {label: lista de amplitudes médias do optical flow}.
         plot (bool): Se True, plota o gráfico.
         csv_path (str, optional): Caminho para CSV. Se não existir, cria.
+        csv_complete (str, optional): Caminho para CSV. Se não existir, cria.
         video_name (str, optional): Nome do vídeo (primeira coluna do CSV).
 
     Returns:
@@ -1012,15 +1014,6 @@ def analyze_metrics(
 
         results[label] = (mean, h, flow_amp)
 
-    # Plot opcional
-    if plot:
-        plt.figure(figsize=(10, 6))
-        for label, (mean, ci, _) in results.items():
-            plt.errorbar([label], [mean], yerr=[ci], fmt="o", capsize=5, label=label)
-        plt.legend()
-        plt.ylabel("Métrica")
-        plt.title("Comparação de métodos")
-        plt.show()
 
     # CSV opcional
     if csv_path is not None:
@@ -1039,5 +1032,32 @@ def analyze_metrics(
                     f"{ci:.6f}",
                     "" if np.isnan(flow_amp) else f"{flow_amp:.6f}"
                 ])
+    if csv_complete is not None:
+        file_exists = os.path.isfile(csv_complete)
+        with open(csv_complete, "a", newline="") as f:
+            writer = csv.writer(f)
 
+            if not file_exists:
+                writer.writerow(["video_name", "frame", "method", "dw-ms-ssim", "flow_amplitude"])
+
+            for key in data:
+                dsmsssims = data[key]
+                flows = flow_amplitudes[key]
+                for i, (ds, fs) in enumerate(zip(dsmsssims, flows)):
+                    writer.writerow([
+                        video_name if video_name else "",
+                        i,
+                        key,
+                        f"{ds:.6f}",
+                        f"{fs:.6f}"
+                    ])
+    # Plot opcional
+    if plot:
+        plt.figure(figsize=(10, 6))
+        for label, (mean, ci, _) in results.items():
+            plt.errorbar([label], [mean], yerr=[ci], fmt="o", capsize=5, label=label)
+        plt.legend()
+        plt.ylabel("Métrica")
+        plt.title("Comparação de métodos")
+        plt.show()
     return results

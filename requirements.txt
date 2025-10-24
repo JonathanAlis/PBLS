@@ -1,5 +1,7 @@
 kornia==0.8.1
 matplotlib==3.10.6
+seaborn==0.13.2
+pandas==2.2.1
 numpy>=2.0.0
 opencv_python==4.11.0.86
 scipy==1.15.0
